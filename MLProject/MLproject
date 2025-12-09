@@ -1,0 +1,5 @@
+name: stroke-prediction
+conda_env: conda.yml
+entry_points:
+  main:
+    command: "python modelling.py"

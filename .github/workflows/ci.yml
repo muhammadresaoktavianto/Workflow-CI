@@ -1,0 +1,105 @@
+name: Advanced CI with MLflow and Docker
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-mlflow-docker:
+    name: Build MLflow Model and Docker
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 2. Setup Python
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12.7'
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: |
+          pip install mlflow==2.19.0
+          pip install pandas==2.3.3 matplotlib==3.7.2 seaborn==0.13.2 scikit-learn==1.7.2 dagshub "numpy<2"
+
+      # 4. Set MLflow Tracking URI
+      - name: Set MLflow 
+        run: echo "MLFLOW_TRACKING_URI=https://dagshub.com/zaamuhammad711/stroke-mlflow.mlflow" >> $GITHUB_ENV
+
+      # 5. Set DagsHub credentials
+      - name: Set DagsHub credentials
+        run: |
+          echo "MLFLOW_TRACKING_USERNAME=${{ secrets.DAGSHUB_USERNAME }}" >> $GITHUB_ENV
+          echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
+
+      # 6. Run MLflow Project
+      - name: Run MLflow Project 
+        run: |
+          cd MLProject
+          python -m mlflow run . --env-manager=local
+        env:
+          MLFLOW_TRACKING_URI: https://dagshub.com/zaamuhammad711/stroke-mlflow.mlflow
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.DAGSHUB_TOKEN }}
+
+      # 7. Get latest MLflow run_id (safe version)
+      - name: Get latest MLflow run_id 
+        id: get_run_id
+        run: |
+          python - <<EOF
+          import mlflow, os
+          runs = mlflow.search_runs(experiment_ids=["0"], order_by=["start_time DESC"], max_results=1)
+          if runs.empty:
+              print("No MLflow runs found.")
+          else:
+              run_id = runs.iloc[0].run_id
+              print("Latest run_id:", run_id)
+              with open(os.environ["GITHUB_ENV"], "a") as f:
+                  f.write(f"RUN_ID={run_id}\n")
+          EOF
+
+      # 8. Upload evaluation artifacts
+      - name: Upload to Github artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stroke-evaluation
+          path: |
+            MLProject/confusion_matrix.png
+            MLProject/test_sample.csv
+
+      # 9. Build Docker image from model
+      - name: Build Docker image
+        run: |
+          if [ -z "$RUN_ID" ]; then
+            echo "No RUN_ID found, skipping Docker build."
+          else
+            echo "Building Docker image from run_id: $RUN_ID"
+            python -m mlflow models build-docker -m runs:/$RUN_ID/model -n stroke-model:latest
+          fi
+        env:
+          RUN_ID: ${{ env.RUN_ID }}
+
+      # 10. Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 11. Tag Docker Image
+      - name: Tag Docker Image
+        run: docker tag stroke-model:latest ${{ secrets.DOCKER_USERNAME }}/my-stroke-model:latest
+
+      # 12. Push Docker Image
+      - name: Push Docker Image
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/my-stroke-model:latest
+
+      # 13. Complete job
+      - name: Complete job
+        run: echo "Workflow completed successfully"
